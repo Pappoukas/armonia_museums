@@ -200,12 +200,48 @@ def tokenize_for_cloud(series: pd.Series) -> Counter:
     return Counter({surface[k]: v for k, v in counts.items()})
 
 
+@st.cache_resource
+def get_greek_font_path() -> str | None:
+    """Εντοπίζει γραμματοσειρά με υποστήριξη ελληνικών, ανεξαρτήτως
+    περιβάλλοντος (τοπικά, Streamlit Cloud, Hugging Face, Docker).
+
+    1) Bundled DejaVuSans.ttf της matplotlib (υπάρχει πάντα αφού η
+       matplotlib είναι στα requirements — αυτή είναι η αξιόπιστη οδός).
+    2) Συνήθη system paths ως εφεδρεία.
+    """
+    try:
+        import matplotlib
+        p = (Path(matplotlib.get_data_path()) / "fonts" / "ttf"
+             / "DejaVuSans.ttf")
+        if p.exists():
+            return str(p)
+    except Exception:
+        pass
+    try:
+        from matplotlib import font_manager as fm
+        p = fm.findfont("DejaVu Sans", fallback_to_default=True)
+        if p and Path(p).exists():
+            return p
+    except Exception:
+        pass
+    for cand in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ):
+        if Path(cand).exists():
+            return cand
+    return None
+
+
 def make_wordcloud(freqs: Counter, colormap: str):
     from wordcloud import WordCloud
+    font_path = get_greek_font_path()
     wc = WordCloud(
         width=900, height=420, background_color=CREAM,
         colormap=colormap, max_words=80,
-        font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        font_path=font_path,  # None → default της wordcloud (χωρίς ελληνικά)
         prefer_horizontal=0.9, collocations=False,
     ).generate_from_frequencies(freqs)
     return wc.to_image()
