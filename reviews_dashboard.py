@@ -42,11 +42,14 @@ MUSEUM_COLORS = {MEND: C_END, MLAO: C_LAO}
 
 DATA_FILE = "museum_reviews_for_analysis.csv"
 
+LEGEND_BOTTOM = dict(orientation="h", yanchor="top", y=-0.22,
+                     xanchor="left", x=0)
+
 PLOTLY_LAYOUT = dict(
     font=dict(family="Raleway, DejaVu Sans, sans-serif", size=13),
     plot_bgcolor="rgba(0,0,0,0)",
     paper_bgcolor="rgba(0,0,0,0)",
-    margin=dict(l=10, r=10, t=50, b=10),
+    margin=dict(l=10, r=10, t=55, b=70),
 )
 
 LANG_MAP = {
@@ -307,7 +310,7 @@ with tabs[0]:
         fig = px.bar(yearly, x="year", y="Κριτικές", color="museum",
                      color_discrete_map=MUSEUM_COLORS, barmode="stack")
         fig.update_layout(xaxis_title=None, legend_title=None,
-                          legend=dict(orientation="h", y=1.12))
+                          legend=LEGEND_BOTTOM)
         st.plotly_chart(style_fig(fig, "Κριτικές ανά έτος"), width="stretch")
 
     with c2:
@@ -317,7 +320,7 @@ with tabs[0]:
         fig = px.bar(stars, x="stars", y="pct", color="museum", barmode="group",
                      color_discrete_map=MUSEUM_COLORS,
                      labels={"pct": "% κριτικών", "stars": "Αστέρια"})
-        fig.update_layout(legend_title=None, legend=dict(orientation="h", y=1.12))
+        fig.update_layout(legend_title=None, legend=LEGEND_BOTTOM)
         st.plotly_chart(style_fig(fig, "Κατανομή αστεριών (%)"), width="stretch")
 
     c3, c4 = st.columns(2)
@@ -328,7 +331,7 @@ with tabs[0]:
         fig = px.bar(seas, x="month", y="Κριτικές", color="museum",
                      color_discrete_map=MUSEUM_COLORS, barmode="stack")
         fig.update_xaxes(tickvals=list(range(1, 13)), ticktext=MONTHS_EL, title=None)
-        fig.update_layout(legend_title=None, legend=dict(orientation="h", y=1.12))
+        fig.update_layout(legend_title=None, legend=LEGEND_BOTTOM)
         st.plotly_chart(style_fig(fig, "Εποχικότητα — κριτικές ανά μήνα"),
                         width="stretch")
 
@@ -344,7 +347,7 @@ with tabs[0]:
                 x=roll.index, y=roll.values, name=m,
                 line=dict(color=MUSEUM_COLORS[m], width=3)))
         fig.update_yaxes(range=[3.9, 5.05], title="Μ.ό. ★ (κυλ. 12μήνου)")
-        fig.update_layout(legend_title=None, legend=dict(orientation="h", y=1.12))
+        fig.update_layout(legend_title=None, legend=LEGEND_BOTTOM)
         st.plotly_chart(style_fig(fig, "Εξέλιξη βαθμολογίας (κυλιόμενο 12μηνο)"),
                         width="stretch")
 
@@ -376,7 +379,7 @@ with tabs[1]:
             ))
     fig.update_layout(barmode="group", height=520,
                       xaxis=dict(ticksuffix="%"),
-                      legend=dict(orientation="h", y=1.08), legend_title=None)
+                      legend=LEGEND_BOTTOM, legend_title=None)
     st.plotly_chart(style_fig(fig, "Συχνότητα θεμάτων ανά μουσείο (% κριτικών με κείμενο)"),
                     width="stretch")
 
@@ -397,7 +400,7 @@ with tabs[1]:
         trend_m = trend.melt("year", var_name="Θέμα", value_name="pct")
         fig = px.line(trend_m, x="year", y="pct", color="Θέμα", markers=True,
                       labels={"pct": "% κριτικών", "year": ""})
-        fig.update_layout(height=460, legend=dict(orientation="h", y=-0.25),
+        fig.update_layout(height=460, legend=LEGEND_BOTTOM,
                           legend_title=None)
         st.plotly_chart(style_fig(fig, "Εξέλιξη κορυφαίων θεμάτων ανά έτος"),
                         width="stretch")
@@ -518,7 +521,7 @@ with tabs[4]:
                      color_discrete_map={"Local Guide": C_LAO,
                                          "Απλός χρήστης": C_END})
         fig.update_layout(xaxis_title=None, legend_title=None,
-                          legend=dict(orientation="h", y=1.12))
+                          legend=LEGEND_BOTTOM)
         st.plotly_chart(style_fig(fig, "Σύνθεση κριτικών ανά μουσείο"),
                         width="stretch")
     with c2:
@@ -528,7 +531,7 @@ with tabs[4]:
                      labels={"Μ_ο": "Μ.ό. ★"})
         fig.update_yaxes(range=[4, 5.05])
         fig.update_layout(xaxis_title=None, legend_title=None,
-                          legend=dict(orientation="h", y=1.12))
+                          legend=LEGEND_BOTTOM)
         st.plotly_chart(style_fig(fig, "Μ.ό. βαθμολογίας: Local Guides vs απλοί χρήστες"),
                         width="stretch")
 
