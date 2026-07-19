@@ -135,6 +135,10 @@ our you your they i very so not but as be have has had from by will out all
 there here when what which
 """.split())
 
+# Εξωτερικό αρχείο stopwords (12 γλώσσες) — αν λείπει, χρησιμοποιούνται
+# μόνο τα ενσωματωμένα ελληνικά/αγγλικά παραπάνω.
+STOPWORDS_FILE = "stopwords_multilingual.txt"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Βοηθητικές συναρτήσεις
@@ -144,6 +148,29 @@ def strip_accents(s: str) -> str:
         c for c in unicodedata.normalize("NFD", str(s).lower())
         if unicodedata.category(c) != "Mn"
     )
+
+
+@st.cache_data(show_spinner=False)
+def load_stopwords(path_mtime: float | None) -> frozenset:
+    """Φορτώνει το πολυγλωσσικό αρχείο stopwords (μία λέξη ανά γραμμή,
+    γραμμές με # αγνοούνται). Οι λέξεις αποθηκεύονται χωρίς τόνους/πεζά
+    ώστε η σύγκριση να ταιριάζει με την κανονικοποίηση των tokens.
+    Το path_mtime ακυρώνει το cache όταν ο χρήστης επεξεργαστεί το αρχείο·
+    None σημαίνει ότι το αρχείο απουσιάζει (fallback στα ενσωματωμένα).
+    """
+    words = set(STOPWORDS_EL) | set(STOPWORDS_EN)
+    if path_mtime is not None:
+        with open(STOPWORDS_FILE, encoding="utf-8") as f:
+            for line in f:
+                w = line.split("#", 1)[0].strip()
+                if w:
+                    words.add(strip_accents(w))
+    return frozenset(words)
+
+
+def get_stopwords() -> frozenset:
+    p = Path(STOPWORDS_FILE)
+    return load_stopwords(p.stat().st_mtime if p.exists() else None)
 
 
 @st.cache_data(show_spinner="Φόρτωση και κωδικοποίηση δεδομένων…")
@@ -185,6 +212,7 @@ def style_fig(fig, title=None):
 def tokenize_for_cloud(series: pd.Series) -> Counter:
     """Μετρά λέξεις, ομαδοποιώντας κατά μορφή χωρίς τόνους,
     αλλά εμφανίζοντας την πιο συχνή «κανονική» μορφή."""
+    stopwords = get_stopwords()
     counts = Counter()
     surface = {}
     surface_counts = Counter()
@@ -193,7 +221,7 @@ def tokenize_for_cloud(series: pd.Series) -> Counter:
             if len(tok) < 3 or tok.isdigit():
                 continue
             key = strip_accents(tok)
-            if key in STOPWORDS_EL or key in STOPWORDS_EN:
+            if key in stopwords:
                 continue
             counts[key] += 1
             surface_counts[(key, tok)] += 1
@@ -419,9 +447,16 @@ with tabs[1]:
 # TAB 3 — Συννεφόλεξα
 # ─────────────────────────────────────────────────────────────────────────────
 with tabs[2]:
+    sw_file_ok = Path(STOPWORDS_FILE).exists()
     st.caption(
         "Οι λέξεις ομαδοποιούνται αγνοώντας τόνους (π.χ. «ξενάγηση/ξεναγηση») "
-        "και αφαιρούνται κοινές λέξεις (stopwords) ελληνικών/αγγλικών."
+        "και αφαιρούνται κοινές λέξεις (stopwords). "
+        + (f"Ενεργό πολυγλωσσικό λεξικό: **{STOPWORDS_FILE}** "
+           f"({len(get_stopwords()):,} λέξεις, 12 γλώσσες) — επεξεργαστείτε "
+           "το αρχείο για προσθαφαίρεση λέξεων."
+           if sw_file_ok else
+           f"⚠️ Δεν βρέθηκε το «{STOPWORDS_FILE}» — χρησιμοποιούνται μόνο "
+           "τα ενσωματωμένα ελληνικά/αγγλικά stopwords.")
     )
     only_el = st.toggle("Μόνο ελληνικές κριτικές", value=False)
     src = t[t["language"] == "el"] if only_el else t
