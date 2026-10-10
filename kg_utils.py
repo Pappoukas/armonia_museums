@@ -330,22 +330,31 @@ def _stars_color(v: float) -> str:
 
 def plot_graph(G: nx.Graph, labels: dict, color_by: str = "community",
                spacing: float = 1.0, show_labels: bool = True,
-               height: int = 680, seed: int = 42) -> go.Figure:
-    """color_by: 'community' | 'stars' | 'kind'."""
+               height: int = 680, seed: int = 42,
+               font_color: str = "#262730") -> go.Figure:
+    """color_by: 'community' | 'stars' | 'kind'.
+
+    Στο layout.meta αποθηκεύονται οι γειτονίες των κόμβων, ώστε η
+    interactive_html() να επισημαίνει τους γείτονες με JavaScript.
+    """
     n = max(G.number_of_nodes(), 1)
     pos = nx.spring_layout(G, k=spacing / math.sqrt(n), weight="weight",
                            seed=seed, iterations=150)
     is_aspect = any(a["kind"] != "concept" for _, a in G.nodes(data=True))
+    nodes = list(G.nodes)
+    nidx = {x: i for i, x in enumerate(nodes)}
     traces = []
 
     # Ακμές: ομαδοποίηση ώστε να έχουν διαφορετικό πάχος/χρώμα
     groups = defaultdict(list)
     weights = sorted(d["weight"] for *_, d in G.edges(data=True)) or [1]
     q1, q2 = (weights[len(weights) // 3], weights[2 * len(weights) // 3])
+    edge_color = {}
     for u, v, d in G.edges(data=True):
         width = 1 if d["weight"] <= q1 else (2.5 if d["weight"] <= q2 else 4.5)
         color = (_stars_color(d["mean_stars"]) if is_aspect
                  else "rgba(120,120,120,0.35)")
+        edge_color[(u, v)] = edge_color[(v, u)] = color
         groups[(width, color)].append((u, v))
     star_names = {NEG_COLOR: "Μ.ό. ≤ 3,5★", MID_COLOR: "Μ.ό. 3,5–4,6★",
                   POS_COLOR: "Μ.ό. ≥ 4,6★"}
@@ -358,21 +367,39 @@ def plot_graph(G: nx.Graph, labels: dict, color_by: str = "community",
         legend = is_aspect and color not in shown_legend
         shown_legend.add(color)
         traces.append(go.Scatter(
-            x=xs, y=ys, mode="lines", hoverinfo="none",
+            x=xs, y=ys, mode="lines", hoverinfo="skip",
             line=dict(width=width, color=color),
             name=star_names.get(color, ""), legendgroup=color,
             showlegend=legend))
+    edge_traces = list(range(len(traces)))
 
-    nodes = list(G.nodes)
+    # Κενά traces επισήμανσης (ένα ανά χρώμα ακμής) — γεμίζουν από τη JS
+    hl_index = {}
+    for color in sorted(set(edge_color.values())):
+        hl_color = color if is_aspect else font_color
+        hl_index[color] = len(traces)
+        traces.append(go.Scatter(
+            x=[], y=[], mode="lines", hoverinfo="skip", showlegend=False,
+            line=dict(width=3.5, color=hl_color)))
+
     a = [G.nodes[x] for x in nodes]
     maxf = max(x["freq"] for x in a) if a else 1
     sizes = [12 + 34 * math.sqrt(x["freq"] / maxf) for x in a]
+
+    def neighbours_text(x):
+        nb = sorted(G[x], key=lambda y: G[x][y]["weight"], reverse=True)
+        names = [node_label(G, y, labels) for y in nb[:6]]
+        more = f" +{len(nb) - 6}" if len(nb) > 6 else ""
+        return ", ".join(names) + more
+
     hover = [
         f"<b>{node_label(G, x, labels)}</b><br>Συχνότητα: {d['freq']}"
         f"<br>Μ.ό. ★: {d['mean_stars']:.2f}<br>Συνδέσεις: {d['degree']}"
         f"<br>Κοινότητα: {d['community'] + 1}"
+        f"<br><i>Συνδέεται με:</i> {neighbours_text(x)}"
         for x, d in zip(nodes, a)]
     marker = dict(size=sizes, line=dict(width=1.5, color="white"),
+                  opacity=[1.0] * len(nodes),
                   symbol=["diamond" if d["kind"] == "adj" else "circle"
                           for d in a])
     if color_by == "stars":
@@ -390,12 +417,18 @@ def plot_graph(G: nx.Graph, labels: dict, color_by: str = "community",
                            if d["community"] < len(PALETTE) else "#999999"
                            for d in a]
 
+    node_trace = len(traces)
     traces.append(go.Scatter(
         x=[pos[x][0] for x in nodes], y=[pos[x][1] for x in nodes],
         mode="markers+text" if show_labels else "markers",
         text=[node_label(G, x, labels) for x in nodes] if show_labels else None,
-        textposition="top center", textfont=dict(size=11),
+        textposition="top center",
+        textfont=dict(size=11, color=[font_color] * len(nodes)),
         hovertext=hover, hoverinfo="text", marker=marker, showlegend=False))
+
+    # Γειτονίες: για κάθε κόμβο [δείκτης γείτονα, trace επισήμανσης]
+    incident = [[[nidx[y], hl_index[edge_color[(x, y)]]] for y in G[x]]
+                for x in nodes]
 
     fig = go.Figure(traces)
     fig.update_layout(
@@ -404,8 +437,94 @@ def plot_graph(G: nx.Graph, labels: dict, color_by: str = "community",
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         xaxis=dict(visible=False), yaxis=dict(visible=False),
         legend=dict(orientation="h", yanchor="bottom", y=0, x=0),
-        font=dict(family="Raleway, DejaVu Sans, sans-serif", size=13))
+        font=dict(family="Raleway, DejaVu Sans, sans-serif", size=13,
+                  color=font_color),
+        meta=dict(kg=dict(node_trace=node_trace, edge_traces=edge_traces,
+                          hl_traces=sorted(hl_index.values()),
+                          incident=incident, font_color=font_color)))
     return fig
+
+
+# JavaScript επισήμανσης γειτόνων (Plotly.js events). Διαβάζει τα δεδομένα
+# από το layout.meta.kg που γράφει η plot_graph().
+_HIGHLIGHT_JS = r"""
+(function () {
+  var gd = document.getElementById('{plot_id}');
+  var M = gd.layout.meta.kg, N = M.node_trace;
+  var X = gd.data[N].x, Y = gd.data[N].y, n = X.length;
+  var FONT = M.font_color, DIM = 0.12, pinned = null;
+  var hint = document.getElementById('kg-hint');
+
+  function fill(v) { var a = new Array(n); for (var i = 0; i < n; i++) a[i] = v; return a; }
+
+  function highlight(i) {
+    var keep = {}; keep[i] = true;
+    var xs = {}, ys = {};
+    M.hl_traces.forEach(function (t) { xs[t] = []; ys[t] = []; });
+    M.incident[i].forEach(function (e) {
+      var j = e[0], t = e[1]; keep[j] = true;
+      xs[t].push(X[i], X[j], null); ys[t].push(Y[i], Y[j], null);
+    });
+    var op = [], tc = [];
+    for (var j = 0; j < n; j++) {
+      op.push(keep[j] ? 1 : DIM);
+      tc.push(keep[j] ? FONT : 'rgba(128,128,128,0.25)');
+    }
+    Plotly.restyle(gd, {'marker.opacity': [op], 'textfont.color': [tc]}, [N]);
+    Plotly.restyle(gd, {opacity: 0.12}, M.edge_traces);
+    Plotly.restyle(gd, {x: M.hl_traces.map(function (t) { return xs[t]; }),
+                        y: M.hl_traces.map(function (t) { return ys[t]; })},
+                   M.hl_traces);
+  }
+
+  function reset() {
+    Plotly.restyle(gd, {'marker.opacity': [fill(1)], 'textfont.color': [fill(FONT)]}, [N]);
+    Plotly.restyle(gd, {opacity: 1}, M.edge_traces);
+    Plotly.restyle(gd, {x: M.hl_traces.map(function () { return []; }),
+                        y: M.hl_traces.map(function () { return []; })},
+                   M.hl_traces);
+  }
+
+  function setHint(txt) { if (hint) hint.textContent = txt; }
+
+  function nodePoint(ev) {
+    for (var k = 0; k < ev.points.length; k++)
+      if (ev.points[k].curveNumber === N) return ev.points[k].pointNumber;
+    return null;
+  }
+
+  gd.on('plotly_hover', function (ev) {
+    var i = nodePoint(ev);
+    if (pinned === null && i !== null) highlight(i);
+  });
+  gd.on('plotly_unhover', function () { if (pinned === null) reset(); });
+  gd.on('plotly_click', function (ev) {
+    var i = nodePoint(ev);
+    if (i === null) return;
+    if (pinned === i) {
+      pinned = null; reset();
+      setHint('Περάστε τον κέρσορα πάνω από έναν κόμβο · κλικ για καρφίτσωμα');
+    } else {
+      pinned = i; highlight(pinned);
+      setHint('📌 «' + gd.data[N].text[pinned] + '» καρφιτσωμένος · κλικ ξανά για αποδέσμευση');
+    }
+  });
+})();
+"""
+
+
+def interactive_html(fig: go.Figure) -> str:
+    """HTML με τον γράφο και επισήμανση γειτόνων σε hover/κλικ (ή αφή)."""
+    font = fig.layout.meta["kg"]["font_color"]
+    body = fig.to_html(
+        full_html=False, include_plotlyjs="cdn", post_script=_HIGHLIGHT_JS,
+        config={"displaylogo": False, "responsive": True,
+                "modeBarButtonsToRemove": ["select2d", "lasso2d"]})
+    return (
+        "<div style=\"font-family:Raleway,'DejaVu Sans',sans-serif;"
+        f"font-size:13px;color:{font};opacity:.75;margin:0 0 4px 4px\" "
+        "id=\"kg-hint\">Περάστε τον κέρσορα πάνω από έναν κόμβο · "
+        "κλικ για καρφίτσωμα</div>" + body)
 
 
 def reviews_with_term(features: pd.DataFrame, key: str, mode: str) -> pd.Index:

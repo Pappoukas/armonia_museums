@@ -22,6 +22,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 import kg_utils as kg
 
@@ -746,8 +747,13 @@ with tabs[6]:
                      "Πόσο καθαρά διαχωρίζονται οι κοινότητες "
                      "(>0,3 θεωρείται ουσιαστική δομή)."),
                 ])
-                st.plotly_chart(kg.plot_graph(G, kg_labels, color_by, spacing),
-                                width="stretch")
+                is_dark = getattr(getattr(st.context, "theme", None),
+                                  "type", "light") == "dark"
+                kg_fig = kg.plot_graph(
+                    G, kg_labels, color_by, spacing, height=680,
+                    font_color="#FAFAFA" if is_dark else "#262730")
+                components.html(kg.interactive_html(kg_fig), height=720,
+                                scrolling=False)
                 if kg_mode == "aspect":
                     st.caption("● ουσιαστικά · ◆ επίθετα · χρώμα ακμής = μέση "
                                "βαθμολογία των κριτικών όπου εμφανίζεται το ζεύγος.")
