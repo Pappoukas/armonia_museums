@@ -5,6 +5,8 @@
 
 Εκτέλεση:  streamlit run reviews_dashboard.py
 Απαιτεί:   streamlit, pandas, plotly, wordcloud, matplotlib, openpyxl/xlsxwriter
+           (προαιρετικά για τον γράφο εννοιών: spacy, networkx, scipy και τα
+           μοντέλα el_core_news_sm / en_core_web_sm — βλ. requirements.txt)
 Δεδομένα:  museum_reviews_for_analysis.csv στον ίδιο φάκελο
            (στήλες: museum, reviewer, stars, date, is_local_guide, language, review_text)
 """
@@ -20,6 +22,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+import kg_utils as kg
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ρυθμίσεις & ταυτότητα
@@ -138,6 +142,13 @@ there here when what which
 # Εξωτερικό αρχείο stopwords (12 γλώσσες) — αν λείπει, χρησιμοποιούνται
 # μόνο τα ενσωματωμένα ελληνικά/αγγλικά παραπάνω.
 STOPWORDS_FILE = "stopwords_multilingual.txt"
+
+# Γράφος εννοιών: ονόματα προσώπων που κρύβονται πάντα. Το ελληνικό NER
+# δεν τα αναγνωρίζει αξιόπιστα (π.χ. ένα μικρό όνομα ως τοποθεσία), οπότε
+# η λίστα συμπληρώνεται χειροκίνητα όταν εμφανιστεί νέο όνομα στον γράφο.
+KG_HIDDEN_TERMS = ("Αλεξάνδρα", "Εμμανουήλ", "Νεκτάριος", "Νεράντζη")
+# Όροι-«κέντρα» που εξαιρούνται αρχικά για να φανεί η δομή του γράφου
+KG_DEFAULT_EXCLUDE = {"μουσειο", "museum"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,7 +326,7 @@ if d.empty:
 tabs = st.tabs([
     "📊 Επισκόπηση", "🏷️ Θεματική ανάλυση", "☁️ Συννεφόλεξα",
     "🌍 Γλώσσες & κοινό", "📍 Local Guides", "⚠️ Αρνητικές κριτικές",
-    "📄 Δεδομένα",
+    "🕸️ Γράφος εννοιών", "📄 Δεδομένα",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -638,9 +649,166 @@ with tabs[5]:
                 st.write(r["review_text"])
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 7 — Δεδομένα & εξαγωγή
+# TAB 7 — Γράφος εννοιών (επαγωγική ανάλυση, spaCy + NetworkX)
 # ─────────────────────────────────────────────────────────────────────────────
 with tabs[6]:
+    st.caption(
+        "Επαγωγική ματιά που συμπληρώνει τη θεματική κωδικοποίηση: οι έννοιες "
+        "και οι σχέσεις τους προκύπτουν από τα ίδια τα κείμενα και όχι από "
+        "προκαθορισμένο λεξικό. Τα φίλτρα του sidebar ισχύουν κανονικά."
+    )
+    kg_langs = kg.available_languages() if kg.SPACY_OK else []
+    if not kg_langs:
+        st.info(
+            "Ο γράφος απαιτεί **spacy**, **networkx** και τα μοντέλα "
+            "`el_core_news_sm` / `en_core_web_sm` (βλ. requirements.txt)."
+        )
+    else:
+        lang_counts = t["language"].value_counts()
+        kg_langs = [lg for lg in kg_langs if lang_counts.get(lg, 0) > 0]
+        other = int(len(t) - sum(lang_counts.get(lg, 0) for lg in kg_langs))
+
+        c1, c2, c3 = st.columns([1, 2, 1])
+        kg_lang = c1.radio(
+            "Γλώσσα κριτικών", kg_langs, horizontal=True,
+            format_func=lambda lg: f"{LANG_MAP.get(lg, lg)} ({lang_counts.get(lg, 0)})",
+        )
+        kg_mode_label = c2.radio(
+            "Τύπος γράφου",
+            ["Συνεμφάνιση εννοιών", "Πτυχές: ουσιαστικό ↔ επίθετο"],
+            horizontal=True,
+            help="Συνεμφάνιση: δύο έννοιες συνδέονται όταν αναφέρονται στην "
+                 "ίδια κριτική. Πτυχές: τι λένε οι επισκέπτες για κάθε έννοια "
+                 "(«ξενάγηση → εξαιρετικός», «ωράριο → όχι σωστός»).",
+        )
+        kg_mode = "cooc" if kg_mode_label.startswith("Συνεμφάνιση") else "aspect"
+        mask_persons = c3.checkbox(
+            "Απόκρυψη ονομάτων προσώπων", value=True,
+            help="Αφαιρεί όσα το μοντέλο αναγνωρίζει ως πρόσωπα. Για ονόματα "
+                 "που δεν εντοπίζονται, συμπληρώστε το KG_HIDDEN_TERMS.",
+        )
+        if other:
+            st.caption(f"ℹ️ {other} κριτικές σε άλλες γλώσσες δεν "
+                       "περιλαμβάνονται (δεν υπάρχει μοντέλο spaCy).")
+
+        # Ανάλυση όλων των κριτικών της γλώσσας μία φορά (cache)·
+        # τα φίλτρα εφαρμόζονται μετά, ώστε να μην ξανατρέχει το spaCy.
+        src = df[df["has_text"] & (df["language"] == kg_lang)]["review_text"]
+        feats_all, kg_labels = kg.extract_features(
+            src, kg_lang, get_stopwords(), mask_persons, KG_HIDDEN_TERMS)
+        feats = feats_all.loc[feats_all.index.intersection(t.index)]
+
+        if len(feats) < 10:
+            st.warning("Πολύ λίγες κριτικές με τα τρέχοντα φίλτρα για "
+                       "αξιόπιστο γράφο (χρειάζονται τουλάχιστον 10).")
+        else:
+            freqs = kg.term_frequencies(feats, kg_mode)
+            top_terms = [k for k, _ in freqs.most_common(40)]
+            s1, s2, s3, s4 = st.columns(4)
+            if kg_mode == "cooc":
+                min_w = s1.slider("Ελάχιστες κοινές κριτικές", 1, 10, 3,
+                                  help="Κατώφλι για να σχεδιαστεί ακμή.")
+                top_n = s2.slider("Μέγιστος αριθμός εννοιών", 20, 150, 70, 10)
+                color_opts = {"Κοινότητα": "community", "Μ.ό. ★": "stars"}
+            else:
+                min_w = s1.slider("Ελάχιστες εμφανίσεις ζεύγους", 1, 6, 2)
+                top_n = None
+                s2.empty()
+                color_opts = {"Είδος λέξης": "kind", "Κοινότητα": "community",
+                              "Μ.ό. ★": "stars"}
+            color_by = color_opts[s3.selectbox("Χρώμα κόμβων", list(color_opts))]
+            spacing = s4.slider("Απόσταση κόμβων", 0.5, 3.0, 1.2, 0.1)
+
+            exclude = st.multiselect(
+                "Εξαίρεση όρων",
+                top_terms,
+                default=[k for k in top_terms if k in KG_DEFAULT_EXCLUDE],
+                format_func=lambda k: f"{kg_labels.get(k, k)} ({freqs[k]})",
+                help="Πολύ γενικοί όροι συνδέονται με όλα και κρύβουν τη δομή.",
+            )
+
+            if kg_mode == "cooc":
+                G = kg.cooccurrence_graph(feats, d["stars"], min_w, top_n, exclude)
+            else:
+                G = kg.aspect_graph(feats, d["stars"], min_w, exclude)
+            summ = kg.annotate(G)
+
+            if summ["nodes"] < 3:
+                st.warning("Ο γράφος είναι σχεδόν κενός — χαμηλώστε το κατώφλι.")
+            else:
+                kpi_row([
+                    ("Κριτικές στον γράφο", f"{len(feats):,}", None),
+                    ("Κόμβοι", f"{summ['nodes']}", None),
+                    ("Ακμές", f"{summ['edges']}", None),
+                    ("Κοινότητες", f"{summ['communities']}",
+                     "Ομάδες εννοιών που συνδέονται πυκνά μεταξύ τους (Louvain)."),
+                    ("Modularity", f"{summ['modularity']:.2f}",
+                     "Πόσο καθαρά διαχωρίζονται οι κοινότητες "
+                     "(>0,3 θεωρείται ουσιαστική δομή)."),
+                ])
+                st.plotly_chart(kg.plot_graph(G, kg_labels, color_by, spacing),
+                                width="stretch")
+                if kg_mode == "aspect":
+                    st.caption("● ουσιαστικά · ◆ επίθετα · χρώμα ακμής = μέση "
+                               "βαθμολογία των κριτικών όπου εμφανίζεται το ζεύγος.")
+
+                st.markdown("#### Θεματικές κοινότητες")
+                comms = kg.community_summary(G, kg_labels)
+                cols = st.columns(min(3, len(comms)))
+                for i, c in enumerate(comms):
+                    color = (kg.PALETTE[c["community"]]
+                             if c["community"] < len(kg.PALETTE) else "#999999")
+                    cols[i % len(cols)].markdown(
+                        f"<span style='color:{color};font-size:1.3em'>●</span> "
+                        f"**Κοινότητα {c['community'] + 1}** · {c['size']} όροι · "
+                        f"{c['mean_stars']:.2f}★<br>{', '.join(c['terms'])}",
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown("#### Κεντρικότητα όρων")
+                tbl = kg.stats_table(G, kg_labels)
+                st.dataframe(tbl, width="stretch", height=360, hide_index=True)
+                st.download_button(
+                    "⬇️ Λήψη CSV (κόμβοι & μέτρα γράφου)",
+                    tbl.to_csv(index=False).encode("utf-8-sig"),
+                    f"grafos_{kg_mode}_{kg_lang}.csv", "text/csv",
+                )
+
+                st.markdown("#### Έλεγχος στο πρωτογενές κείμενο")
+                node_keys = sorted({a["key"] for _, a in G.nodes(data=True)},
+                                   key=lambda k: -freqs.get(k, 0))
+                sel_key = st.selectbox(
+                    "Κριτικές που περιέχουν τον όρο", node_keys,
+                    format_func=lambda k: kg_labels.get(k, k),
+                )
+                hits = d.loc[kg.reviews_with_term(feats, sel_key, kg_mode)]
+                st.caption(f"{len(hits)} κριτικές · μ.ό. {hits['stars'].mean():.2f}★")
+                for _, r in hits.sort_values("date", ascending=False).head(8).iterrows():
+                    with st.expander(f"{r['stars']}★ · {r['museum']} · {r['date']:%d/%m/%Y}"):
+                        st.write(r["review_text"])
+
+        with st.expander("Μεθοδολογία & περιορισμοί"):
+            st.markdown(
+                "- **Προεπεξεργασία:** spaCy (`el_core_news_sm` / `en_core_web_sm`), "
+                "λήμματα χωρίς τόνους, αφαίρεση stopwords του dashboard.\n"
+                "- **Συνεμφάνιση:** ουσιαστικά/κύρια ονόματα ανά κριτική· "
+                "βάρος ακμής = πλήθος κριτικών με κοινή αναφορά.\n"
+                "- **Πτυχές:** επιθετικός προσδιορισμός (amod) και κατηγορούμενο "
+                "(με ρήμα «είμαι»), με ανίχνευση άρνησης. Ταξινομικά επίθετα "
+                "(π.χ. «λαογραφικός») εξαιρούνται.\n"
+                "- **Μέτρα:** PageRank, ενδιάμεση κεντρικότητα, κοινότητες Louvain "
+                "(σταθερό seed για αναπαραγωγιμότητα).\n"
+                "- **Περιορισμοί:** τα μικρά μοντέλα κάνουν λάθη σε λημματοποίηση "
+                "και NER (π.χ. ονόματα ως τοποθεσίες)· τα αποτελέσματα είναι "
+                "διερευνητικά και ελέγχονται με το πρωτογενές κείμενο παραπάνω.\n"
+                "- Η ιδέα της απεικόνισης βασίζεται στο Wordlit (S. Maharaj, 2024, "
+                "CC BY 4.0)."
+            )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 8 — Δεδομένα & εξαγωγή
+# ─────────────────────────────────────────────────────────────────────────────
+with tabs[7]:
     st.caption(
         "Πλήρης πίνακας με τη θεματική κωδικοποίηση (1 = το θέμα εντοπίστηκε). "
         "Η κωδικοποίηση είναι lexicon-based· για ερευνητική χρήση συνιστάται "
@@ -667,5 +835,6 @@ with tabs[6]:
 st.divider()
 st.caption(
     "Μουσικοφιλολογικός Σύλλογος «Αρμονία» Καστοριάς · Πηγή: Google Business "
-    "Profile · Θεματική ανάλυση lexicon-based (9 κατηγορίες, πολυγλωσσικό λεξικό)"
+    "Profile · Θεματική ανάλυση lexicon-based (9 κατηγορίες, πολυγλωσσικό λεξικό) · "
+    "Γράφος εννοιών: spaCy + NetworkX"
 )
